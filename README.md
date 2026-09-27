@@ -1,4 +1,4 @@
-# WASPS Weekly Sign-In Pilot
+# WASRA Weekly Sign-In Pilot
 
 Mobile-first Next.js front end for the Supabase-backed WASPS sign-in pilot.
 
