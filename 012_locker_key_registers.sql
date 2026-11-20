@@ -12,6 +12,33 @@
 
 begin;
 
+-- Helper used by the access rules below. Created only if your database does
+-- not already have it. Returns the signed-in person's staff role (admin,
+-- organiser, ...) from public.user_profiles, or null if they are not active staff.
+do $do$
+begin
+    if to_regprocedure('public.current_staff_role()') is null then
+        execute $fn$
+            create function public.current_staff_role()
+            returns text
+            language sql
+            stable
+            security definer
+            set search_path = ''
+            as $body$
+                select up.role::text
+                from public.user_profiles up
+                where up.user_id = auth.uid()
+                  and up.is_active
+                limit 1
+            $body$
+        $fn$;
+        revoke all on function public.current_staff_role() from public, anon;
+        grant execute on function public.current_staff_role() to authenticated;
+    end if;
+end
+$do$;
+
 -- ---------------------------------------------------------------------------
 -- Access list
 -- ---------------------------------------------------------------------------
