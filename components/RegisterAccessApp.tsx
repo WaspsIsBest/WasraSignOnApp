@@ -10,7 +10,7 @@ type PersonRow = {
   email: string | null;
   full_name: string | null;
   club: string | null;
-  position: string | null;
+  job_position: string | null;
   role: string | null;
   lockers_access: string | null;
   keys_access: string | null;
@@ -190,7 +190,7 @@ export default function RegisterAccessApp() {
             <div key={row.user_id} style={{ padding: "13px 2px", borderBottom: "1px solid var(--line)" }}>
               <div className="row-name">{row.full_name ?? row.email ?? row.user_id}</div>
               <div className="row-meta">
-                {[row.position, row.club, row.full_name ? row.email : null].filter(Boolean).join(" • ")}
+                {[row.job_position, row.club, row.full_name ? row.email : null].filter(Boolean).join(" • ")}
                 {row.role ? ` • sign-in role: ${row.role}` : ""}
               </div>
               {row.role === "admin" ? (

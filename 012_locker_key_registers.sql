@@ -61,7 +61,7 @@ create table if not exists public.register_people (
     user_id uuid primary key references auth.users (id) on delete cascade,
     full_name text,
     club text,
-    position text,
+    job_position text,
     updated_at timestamptz not null default now()
 );
 
@@ -539,7 +539,7 @@ returns table (
     email text,
     full_name text,
     club text,
-    position text,
+    job_position text,
     role text,
     lockers_access text,
     keys_access text,
@@ -561,7 +561,7 @@ begin
         u.email::text,
         rp.full_name,
         rp.club,
-        rp.position,
+        rp.job_position,
         up.role::text,
         (select ra.access_level from public.register_access ra where ra.user_id = u.id and ra.register = 'lockers'),
         (select ra.access_level from public.register_access ra where ra.user_id = u.id and ra.register = 'keys'),
@@ -614,10 +614,10 @@ begin
         return jsonb_build_object('outcome', 'invalid_request', 'message', 'Access must be none, view or edit.');
     end if;
 
-    insert into public.register_people (user_id, full_name, club, position)
+    insert into public.register_people (user_id, full_name, club, job_position)
     values (v_user_id, nullif(btrim(coalesce(p_full_name, '')), ''), nullif(btrim(coalesce(p_club, '')), ''), nullif(btrim(coalesce(p_position, '')), ''))
     on conflict (user_id) do update
-        set full_name = excluded.full_name, club = excluded.club, position = excluded.position, updated_at = now();
+        set full_name = excluded.full_name, club = excluded.club, job_position = excluded.job_position, updated_at = now();
 
     for v_register, v_level in
         select * from (values ('lockers', p_lockers), ('keys', p_keys), ('issues', p_issues)) as t(r, l)
@@ -636,7 +636,7 @@ begin
 end;
 $$;
 
--- Admin can also update the label (name, club, position) of an existing person.
+-- Admin can also update the label (name, club, job_position) of an existing person.
 create or replace function public.set_register_person(
     p_user_id uuid,
     p_full_name text,
@@ -653,10 +653,10 @@ begin
         return jsonb_build_object('outcome', 'not_authorised', 'message', 'Only an administrator can change register access.');
     end if;
 
-    insert into public.register_people (user_id, full_name, club, position)
+    insert into public.register_people (user_id, full_name, club, job_position)
     values (p_user_id, nullif(btrim(coalesce(p_full_name, '')), ''), nullif(btrim(coalesce(p_club, '')), ''), nullif(btrim(coalesce(p_position, '')), ''))
     on conflict (user_id) do update
-        set full_name = excluded.full_name, club = excluded.club, position = excluded.position, updated_at = now();
+        set full_name = excluded.full_name, club = excluded.club, job_position = excluded.job_position, updated_at = now();
 
     return jsonb_build_object('outcome', 'saved', 'message', 'Details saved.');
 end;
