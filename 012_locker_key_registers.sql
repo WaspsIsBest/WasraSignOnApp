@@ -12,6 +12,40 @@
 
 begin;
 
+-- Stop early with a clear message if the members table is not there yet
+-- (lockers and keys can be assigned to members by WASRA number).
+do $do$
+begin
+    if to_regclass('public.members') is null then
+        raise exception 'public.members does not exist yet. Create the members table before running this script.';
+    end if;
+end
+$do$;
+
+-- Staff roles table used by the sign-in app. Created only if missing.
+-- role is typically admin, organiser or sign_in.
+do $do$
+begin
+    if to_regclass('public.user_profiles') is null then
+        create table public.user_profiles (
+            user_id uuid primary key references auth.users (id) on delete cascade,
+            role text not null,
+            is_active boolean not null default true,
+            created_at timestamptz not null default now()
+        );
+
+        alter table public.user_profiles enable row level security;
+
+        -- Signed-in people can read their own profile (the app does this on every page).
+        create policy user_profiles_select_own on public.user_profiles
+            for select to authenticated
+            using (user_id = auth.uid());
+
+        grant select on public.user_profiles to authenticated;
+    end if;
+end
+$do$;
+
 -- Helper used by the access rules below. Created only if your database does
 -- not already have it. Returns the signed-in person's staff role (admin,
 -- organiser, ...) from public.user_profiles, or null if they are not active staff.
