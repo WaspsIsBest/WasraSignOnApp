@@ -3,7 +3,9 @@
 --
 -- Access model: each register (lockers, keys) has its own access list.
 --   admin            -> always full (edit) access to lockers, keys and issues
---   anyone else      -> only what is granted in public.register_access
+--   anyone else      -> only what is granted in public.register_access (they need
+--                       a login but do NOT need to be sign-in staff, so nominated
+--                       people from other clubs can report issues)
 --                       ('view' = read only, 'edit' = assign/return/add items)
 -- Writes to assignments go through the functions below so that an item can
 -- only ever have one open assignment and every change stays in the history.
@@ -31,19 +33,19 @@ security definer
 set search_path = ''
 as $$
 declare
-    v_role text;
     v_level text;
 begin
-    v_role := public.current_staff_role();
-
-    if v_role is null then
+    if auth.uid() is null then
         return null;
     end if;
 
-    if v_role = 'admin' then
+    -- Administrators always have full access.
+    if public.current_staff_role() = 'admin' then
         return 'edit';
     end if;
 
+    -- Everyone else (staff or not, e.g. a nominated person from another
+    -- club) only has what an administrator has granted them.
     select ra.access_level
     into v_level
     from public.register_access ra
@@ -53,6 +55,23 @@ begin
     return v_level;
 end;
 $$;
+
+-- Who each person is (the register access list shows this)
+create table if not exists public.register_people (
+    user_id uuid primary key references auth.users (id) on delete cascade,
+    full_name text,
+    club text,
+    position text,
+    updated_at timestamptz not null default now()
+);
+
+alter table public.register_people enable row level security;
+
+drop policy if exists register_people_admin_all on public.register_people;
+create policy register_people_admin_all on public.register_people
+    for all
+    using (public.current_staff_role() = 'admin')
+    with check (public.current_staff_role() = 'admin');
 
 drop policy if exists register_access_admin_all on public.register_access;
 create policy register_access_admin_all on public.register_access
@@ -488,9 +507,12 @@ create policy venue_issues_update on public.venue_issues
 create or replace view public.app_venue_issues as
 select i.id, i.title, i.description, i.category, i.location, i.priority, i.status,
        i.photo_path, i.created_at, i.resolved_at, i.resolution_notes,
-       u.email::text as reported_by_email
+       u.email::text as reported_by_email,
+       rp.full_name as reported_by_name,
+       rp.club as reported_by_club
 from public.venue_issues i
 left join auth.users u on u.id = i.reported_by
+left join public.register_people rp on rp.user_id = i.reported_by
 where public.register_access_level('issues') is not null;
 
 -- Private storage bucket for issue photos
@@ -511,12 +533,14 @@ create policy venue_issue_photos_insert on storage.objects
 -- ---------------------------------------------------------------------------
 -- Admin: manage who can see/edit each register
 -- ---------------------------------------------------------------------------
-create or replace function public.list_staff_register_access()
+create or replace function public.list_register_people()
 returns table (
     user_id uuid,
     email text,
+    full_name text,
+    club text,
+    position text,
     role text,
-    is_active boolean,
     lockers_access text,
     keys_access text,
     issues_access text
@@ -533,16 +557,108 @@ begin
 
     return query
     select
-        up.user_id,
+        u.id,
         u.email::text,
+        rp.full_name,
+        rp.club,
+        rp.position,
         up.role::text,
-        up.is_active,
-        (select ra.access_level from public.register_access ra where ra.user_id = up.user_id and ra.register = 'lockers'),
-        (select ra.access_level from public.register_access ra where ra.user_id = up.user_id and ra.register = 'keys'),
-        (select ra.access_level from public.register_access ra where ra.user_id = up.user_id and ra.register = 'issues')
-    from public.user_profiles up
-    join auth.users u on u.id = up.user_id
-    order by u.email;
+        (select ra.access_level from public.register_access ra where ra.user_id = u.id and ra.register = 'lockers'),
+        (select ra.access_level from public.register_access ra where ra.user_id = u.id and ra.register = 'keys'),
+        (select ra.access_level from public.register_access ra where ra.user_id = u.id and ra.register = 'issues')
+    from auth.users u
+    left join public.user_profiles up on up.user_id = u.id
+    left join public.register_people rp on rp.user_id = u.id
+    where up.user_id is not null
+       or rp.user_id is not null
+       or exists (select 1 from public.register_access ra where ra.user_id = u.id)
+    order by rp.club nulls last, rp.full_name nulls last, u.email;
+end;
+$$;
+
+-- Give someone access by email. The person must already have a login
+-- (create the user in Supabase Authentication first if they do not).
+create or replace function public.grant_register_access_by_email(
+    p_email text,
+    p_full_name text,
+    p_club text,
+    p_position text,
+    p_lockers text default 'none',
+    p_keys text default 'none',
+    p_issues text default 'none'
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    v_user_id uuid;
+    v_register text;
+    v_level text;
+begin
+    if public.current_staff_role() is distinct from 'admin' then
+        return jsonb_build_object('outcome', 'not_authorised', 'message', 'Only an administrator can change register access.');
+    end if;
+
+    select id into v_user_id from auth.users where lower(email) = lower(btrim(p_email)) limit 1;
+
+    if v_user_id is null then
+        return jsonb_build_object(
+            'outcome', 'user_not_found',
+            'message', 'No login exists for that email. Create the user in Supabase Authentication first, then add them here.'
+        );
+    end if;
+
+    if p_lockers not in ('none', 'view', 'edit') or p_keys not in ('none', 'view', 'edit') or p_issues not in ('none', 'view', 'edit') then
+        return jsonb_build_object('outcome', 'invalid_request', 'message', 'Access must be none, view or edit.');
+    end if;
+
+    insert into public.register_people (user_id, full_name, club, position)
+    values (v_user_id, nullif(btrim(coalesce(p_full_name, '')), ''), nullif(btrim(coalesce(p_club, '')), ''), nullif(btrim(coalesce(p_position, '')), ''))
+    on conflict (user_id) do update
+        set full_name = excluded.full_name, club = excluded.club, position = excluded.position, updated_at = now();
+
+    for v_register, v_level in
+        select * from (values ('lockers', p_lockers), ('keys', p_keys), ('issues', p_issues)) as t(r, l)
+    loop
+        if v_level = 'none' then
+            delete from public.register_access where user_id = v_user_id and register = v_register;
+        else
+            insert into public.register_access (user_id, register, access_level)
+            values (v_user_id, v_register, v_level)
+            on conflict (user_id, register)
+            do update set access_level = excluded.access_level, updated_at = now();
+        end if;
+    end loop;
+
+    return jsonb_build_object('outcome', 'saved', 'message', 'Access saved.');
+end;
+$$;
+
+-- Admin can also update the label (name, club, position) of an existing person.
+create or replace function public.set_register_person(
+    p_user_id uuid,
+    p_full_name text,
+    p_club text,
+    p_position text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+    if public.current_staff_role() is distinct from 'admin' then
+        return jsonb_build_object('outcome', 'not_authorised', 'message', 'Only an administrator can change register access.');
+    end if;
+
+    insert into public.register_people (user_id, full_name, club, position)
+    values (p_user_id, nullif(btrim(coalesce(p_full_name, '')), ''), nullif(btrim(coalesce(p_club, '')), ''), nullif(btrim(coalesce(p_position, '')), ''))
+    on conflict (user_id) do update
+        set full_name = excluded.full_name, club = excluded.club, position = excluded.position, updated_at = now();
+
+    return jsonb_build_object('outcome', 'saved', 'message', 'Details saved.');
 end;
 $$;
 
@@ -588,7 +704,8 @@ revoke all on public.register_access, public.lockers, public.locker_assignments,
 revoke all on public.app_locker_register, public.app_locker_history,
     public.app_key_register, public.app_key_history from anon;
 
-grant select, insert, update, delete on public.register_access to authenticated;
+grant select, insert, update, delete on public.register_access, public.register_people to authenticated;
+revoke all on public.register_people from anon;
 revoke all on public.venue_issues, public.app_venue_issues from anon;
 grant select, insert, update on public.venue_issues to authenticated;
 grant select on public.app_venue_issues to authenticated;
@@ -602,7 +719,9 @@ revoke all on function public.assign_locker(bigint, integer, text, date, text) f
 revoke all on function public.return_locker(bigint, date, text) from public, anon;
 revoke all on function public.assign_key(bigint, integer, text, date, numeric, text, text) from public, anon;
 revoke all on function public.return_key(bigint, date, text, text) from public, anon;
-revoke all on function public.list_staff_register_access() from public, anon;
+revoke all on function public.list_register_people() from public, anon;
+revoke all on function public.grant_register_access_by_email(text, text, text, text, text, text, text) from public, anon;
+revoke all on function public.set_register_person(uuid, text, text, text) from public, anon;
 revoke all on function public.set_register_access(uuid, text, text) from public, anon;
 
 grant execute on function public.register_access_level(text) to authenticated;
@@ -610,7 +729,9 @@ grant execute on function public.assign_locker(bigint, integer, text, date, text
 grant execute on function public.return_locker(bigint, date, text) to authenticated;
 grant execute on function public.assign_key(bigint, integer, text, date, numeric, text, text) to authenticated;
 grant execute on function public.return_key(bigint, date, text, text) to authenticated;
-grant execute on function public.list_staff_register_access() to authenticated;
+grant execute on function public.list_register_people() to authenticated;
+grant execute on function public.grant_register_access_by_email(text, text, text, text, text, text, text) to authenticated;
+grant execute on function public.set_register_person(uuid, text, text, text) to authenticated;
 grant execute on function public.set_register_access(uuid, text, text) to authenticated;
 
 commit;

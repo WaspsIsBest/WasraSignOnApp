@@ -19,6 +19,8 @@ type IssueRow = {
   resolved_at: string | null;
   resolution_notes: string | null;
   reported_by_email: string | null;
+  reported_by_name: string | null;
+  reported_by_club: string | null;
 };
 
 const CATEGORIES = ["Lighting", "Plumbing", "Electrical", "Building", "Grounds", "Range equipment", "Security", "Other"];
@@ -299,7 +301,10 @@ export default function IssuesApp() {
                   </div>
                   <div className="row-meta">
                     Reported {when(issue.created_at)}
-                    {issue.reported_by_email ? ` by ${issue.reported_by_email}` : ""}
+                    {issue.reported_by_name || issue.reported_by_email
+                      ? ` by ${issue.reported_by_name ?? issue.reported_by_email}`
+                      : ""}
+                    {issue.reported_by_club ? ` (${issue.reported_by_club})` : ""}
                   </div>
                 </div>
                 <div className={`status ${issue.status === "resolved" ? "good" : issue.priority === "urgent" ? "warn" : "wait"}`}>
