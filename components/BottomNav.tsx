@@ -3,12 +3,12 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { getRegisterAccess } from "@/lib/registers/access";
 
-type ActivePage = "scan" | "attendance" | "events" | "import";
+type ActivePage = "scan" | "attendance" | "events" | "import" | "registers";
 
 const navStyle = {
   display: "grid",
-  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
   gap: "6px",
   padding: "6px",
   width: "100%",
@@ -40,6 +40,7 @@ const activeLinkStyle = {
 
 export default function BottomNav({ active }: { active: ActivePage }) {
   const [canManageEvents, setCanManageEvents] = useState(false);
+  const [hasRegisters, setHasRegisters] = useState(false);
 
   useEffect(() => {
     async function loadRole() {
@@ -64,15 +65,30 @@ export default function BottomNav({ active }: { active: ActivePage }) {
       );
     }
 
+    async function loadRegisters() {
+      const levels = await Promise.all([
+        getRegisterAccess("lockers"),
+        getRegisterAccess("keys"),
+        getRegisterAccess("issues"),
+      ]);
+      setHasRegisters(levels.some((level) => level !== "none"));
+    }
+
     void loadRole();
+    void loadRegisters();
   }, []);
 
   function styleFor(page: ActivePage) {
     return active === page ? activeLinkStyle : linkStyle;
   }
 
+  const columns = 3 + (canManageEvents ? 2 : 1) - 1 + (hasRegisters ? 1 : 0);
+
   return (
-    <nav className="bottom-nav" style={navStyle}>
+    <nav
+      className="bottom-nav"
+      style={{ ...navStyle, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+    >
       <Link href="/sign-in" style={styleFor("scan")}>
         Scan
       </Link>
@@ -95,6 +111,12 @@ export default function BottomNav({ active }: { active: ActivePage }) {
         <a href="#top" style={linkStyle}>
           Top
         </a>
+      )}
+
+      {hasRegisters && (
+        <Link href="/admin/registers" style={styleFor("registers")}>
+          Registers
+        </Link>
       )}
     </nav>
   );
